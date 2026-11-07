@@ -11,8 +11,9 @@ use ratatui::widgets::{
 use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Runtime;
 
+use crate::cli::{human_size, safe_name};
 use crate::gmail::Client;
-use crate::mail::{Action, Label, Page, Selection};
+use crate::mail::{Action, Attachment, Label, Message, Page, Selection};
 
 const HALF_PAGE: usize = 15;
 
@@ -40,7 +41,8 @@ struct App {
 
 enum View {
     List,
-    Read(String),
+    Read(Message),
+    Attachments { msg: Message, cursor: usize },
     LabelPicker { cursor: usize },
     Jump { input: String, cursor: usize },
     ConfirmDelete,
@@ -127,10 +129,11 @@ fn render(f: &mut Frame, app: &App) {
 
     render_header(f, app, header);
     match &app.view {
-        View::Read(text) => render_read(f, app, text, body),
+        View::Read(msg) => render_read(f, app, msg, body),
         _ => render_table(f, app, body),
     }
     match &app.view {
+        View::Attachments { msg, cursor } => render_attachments(f, msg, *cursor, body),
         View::LabelPicker { cursor } => render_picker(f, app, *cursor, body),
         View::Jump { input, cursor } => render_jump(f, app, input, *cursor, body),
         _ => {}
@@ -183,21 +186,21 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(Color::Gray)
         };
-        let clip = if s.has_attachment { "@" } else { "" };
+        let icons: String = s.attachments.iter().take(2).map(|n| icon(n)).collect();
         Row::new(vec![
-            Cell::from(clip).style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Cell::from(icons),
             Cell::from(short_date(&s.date)).style(Style::default().fg(DIM)),
             Cell::from(short_from(&s.from)).style(Style::default().fg(KEY)),
             Cell::from(s.subject.as_str()).style(text),
         ])
     });
-    let header = Row::new(vec![" ", "DATE", "FROM", "SUBJECT"]).style(
+    let header = Row::new(vec!["", "DATE", "FROM", "SUBJECT"]).style(
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     );
     let widths = [
-        Constraint::Length(1),
+        Constraint::Length(4),
         Constraint::Length(17),
         Constraint::Length(26),
         Constraint::Min(0),
@@ -214,14 +217,60 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_read(f: &mut Frame, app: &App, text: &str, area: Rect) {
+fn render_read(f: &mut Frame, app: &App, msg: &Message, area: Rect) {
     let item = &app.page.items[app.cursor];
+    let block = pane(&format!("{}  <{}>", item.subject, item.from));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let [head, text] = Layout::vertical([
+        Constraint::Length(if msg.attachments.is_empty() { 0 } else { 2 }),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+    if !msg.attachments.is_empty() {
+        let mut spans = vec![Span::styled("attachments: ", Style::default().fg(DIM))];
+        for a in &msg.attachments {
+            spans.push(Span::styled(
+                format!(
+                    "{} {} ({})  ",
+                    icon(&a.name),
+                    a.name,
+                    human_size(a.data.len())
+                ),
+                Style::default().fg(ACCENT),
+            ));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(spans)).wrap(Wrap { trim: false }),
+            head,
+        );
+    }
     f.render_widget(
-        Paragraph::new(text)
-            .block(pane(&format!("{}  <{}>", item.subject, item.from)))
+        Paragraph::new(msg.body.as_str())
             .wrap(Wrap { trim: false })
             .scroll((app.scroll, 0)),
+        text,
+    );
+}
+
+fn render_attachments(f: &mut Frame, msg: &Message, cursor: usize, area: Rect) {
+    let rows = msg.attachments.iter().map(|a| {
+        ListItem::new(format!(
+            "{} {}  {}",
+            icon(&a.name),
+            a.name,
+            human_size(a.data.len())
+        ))
+    });
+    let mut state = ListState::default().with_selected(Some(cursor));
+    let area = popup(area, 70, msg.attachments.len() as u16 + 2);
+    f.render_widget(Clear, area);
+    f.render_stateful_widget(
+        List::new(rows)
+            .block(pane("attachments: <enter> open  <s> save"))
+            .highlight_style(SELECTED),
         area,
+        &mut state,
     );
 }
 
@@ -268,6 +317,7 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
     let keys: &[(&str, &str)] = match app.view {
         View::Read(_) => &[
             ("j/k", "scroll"),
+            ("o", "attachments"),
             ("a", "archive"),
             ("d", "trash"),
             ("D", "delete"),
@@ -279,6 +329,7 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
             ("g/G", "top/end"),
             ("C-d/u", "page"),
             ("enter", "read"),
+            ("o", "attachments"),
             ("a", "archive"),
             ("d", "trash"),
             ("D", "delete"),
@@ -327,6 +378,26 @@ fn pane(title: &str) -> Block<'static> {
             format!(" {title} "),
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         ))
+}
+
+/// One glyph per attachment kind, by file extension.
+fn icon(name: &str) -> &'static str {
+    let ext = name
+        .rsplit_once('.')
+        .map_or("", |(_, e)| e)
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "bmp" | "svg" => "\u{1f5bc}\u{fe0f}",
+        "pdf" => "\u{1f4d5}",
+        "doc" | "docx" | "odt" | "rtf" | "txt" | "md" => "\u{1f4dd}",
+        "xls" | "xlsx" | "ods" | "csv" => "\u{1f4ca}",
+        "ppt" | "pptx" | "odp" => "\u{1f4fd}\u{fe0f}",
+        "zip" | "7z" | "rar" | "gz" | "tar" | "tgz" => "\u{1f4e6}",
+        "mp3" | "wav" | "m4a" | "ogg" | "flac" => "\u{1f3b5}",
+        "mp4" | "mov" | "mkv" | "avi" | "webm" => "\u{1f3ac}",
+        "ics" => "\u{1f4c5}",
+        _ => "\u{1f4ce}",
+    }
 }
 
 fn popup(area: Rect, width: u16, height: u16) -> Rect {
@@ -420,6 +491,34 @@ fn handle_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> {
             }
             Ok(false)
         }
+        View::Attachments { msg, cursor } => {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    *cursor = (*cursor + 1).min(msg.attachments.len() - 1)
+                }
+                KeyCode::Up | KeyCode::Char('k') => *cursor = cursor.saturating_sub(1),
+                KeyCode::Enter | KeyCode::Char('o') => {
+                    let path = save_attachment(&msg.attachments[*cursor])?;
+                    open::that_detached(&path)
+                        .with_context(|| format!("open {}", path.display()))?;
+                    app.status = format!("opened {}", path.display());
+                }
+                KeyCode::Char('s') => {
+                    let path = save_attachment(&msg.attachments[*cursor])?;
+                    app.status = format!("saved {}", path.display());
+                }
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    let View::Attachments { msg, .. } =
+                        std::mem::replace(&mut app.view, View::List)
+                    else {
+                        unreachable!()
+                    };
+                    app.view = View::Read(msg);
+                }
+                _ => {}
+            }
+            Ok(false)
+        }
         View::ConfirmDelete => {
             if key.code == KeyCode::Char('y') {
                 act(ctx, app, Action::Delete)?;
@@ -463,6 +562,17 @@ fn handle_read_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> 
         KeyCode::Char('g') => app.scroll = 0,
         KeyCode::Char('G') => app.scroll = u16::MAX / 2,
         KeyCode::Char('q') | KeyCode::Esc => app.view = View::List,
+        KeyCode::Char('o') => {
+            let View::Read(msg) = std::mem::replace(&mut app.view, View::List) else {
+                unreachable!()
+            };
+            if msg.attachments.is_empty() {
+                app.status = "no attachments".to_string();
+                app.view = View::Read(msg);
+            } else {
+                app.view = View::Attachments { msg, cursor: 0 };
+            }
+        }
         _ => handle_action_key(ctx, app, key.code)?,
     }
     Ok(false)
@@ -520,6 +630,21 @@ fn handle_list_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> 
             }
         }
         KeyCode::Enter => read(ctx, app)?,
+        KeyCode::Char('o') => {
+            if app
+                .page
+                .items
+                .get(app.cursor)
+                .is_some_and(|s| !s.attachments.is_empty())
+            {
+                read(ctx, app)?;
+                if let View::Read(msg) = std::mem::replace(&mut app.view, View::List) {
+                    app.view = View::Attachments { msg, cursor: 0 };
+                }
+            } else {
+                app.status = "no attachments".to_string();
+            }
+        }
         _ => handle_action_key(ctx, app, key.code)?,
     }
     Ok(false)
@@ -581,10 +706,22 @@ fn read(ctx: &mut Ctx, app: &mut App) -> Result<()> {
     };
     let id = item.id.clone();
     let client = ctx.client;
-    let body = ctx.call(app, client.message(&id))?;
-    app.view = View::Read(body);
+    let msg = ctx.call(app, client.message(&id))?;
+    app.view = View::Read(msg);
     app.scroll = 0;
     Ok(())
+}
+
+/// Writes the attachment under ~/Downloads/meili and returns its path.
+fn save_attachment(a: &Attachment) -> Result<std::path::PathBuf> {
+    let dir = dirs::download_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+        .context("no download dir")?
+        .join("meili");
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let path = dir.join(safe_name(&a.name));
+    std::fs::write(&path, &a.data).with_context(|| format!("write {}", path.display()))?;
+    Ok(path)
 }
 
 fn act(ctx: &mut Ctx, app: &mut App, action: Action) -> Result<()> {
@@ -612,6 +749,14 @@ fn act(ctx: &mut Ctx, app: &mut App, action: Action) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_follows_extension_case_insensitively() {
+        assert_eq!(icon("Informe.PDF"), icon("x.pdf"));
+        assert_eq!(icon("a.jpeg"), icon("b.png"));
+        assert_ne!(icon("a.pdf"), icon("a.xlsx"));
+        assert_eq!(icon("noext"), icon("weird.bin"));
+    }
 
     #[test]
     fn short_date_drops_weekday_and_seconds() {

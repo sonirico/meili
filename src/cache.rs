@@ -9,7 +9,7 @@ use crate::mail::Summary;
 
 const SEP: char = '\x1f';
 /// Bump when the table shape changes; the cache is rebuilt from Gmail.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Local copy of message metadata so a listing only asks Gmail for ids it has not seen.
 pub struct Cache {
@@ -32,7 +32,7 @@ impl Cache {
                     subject TEXT NOT NULL,
                     date TEXT NOT NULL,
                     labels TEXT NOT NULL,
-                    has_attachment INTEGER NOT NULL
+                    attachments TEXT NOT NULL
                  );
                  PRAGMA user_version = {SCHEMA_VERSION};"
             ))?;
@@ -45,13 +45,14 @@ impl Cache {
     pub fn get(&self, ids: &[String]) -> Result<HashMap<String, Summary>> {
         let conn = self.conn.lock().expect("cache lock");
         let mut stmt = conn.prepare(
-            "SELECT sender, subject, date, labels, has_attachment FROM messages WHERE id = ?1",
+            "SELECT sender, subject, date, labels, attachments FROM messages WHERE id = ?1",
         )?;
         let mut found = HashMap::new();
         for id in ids {
             let mut rows = stmt.query(params![id])?;
             if let Some(row) = rows.next()? {
                 let labels: String = row.get(3)?;
+                let attachments: String = row.get(4)?;
                 found.insert(
                     id.clone(),
                     Summary {
@@ -59,12 +60,8 @@ impl Cache {
                         from: row.get(0)?,
                         subject: row.get(1)?,
                         date: row.get(2)?,
-                        labels: labels
-                            .split(SEP)
-                            .filter(|l| !l.is_empty())
-                            .map(str::to_string)
-                            .collect(),
-                        has_attachment: row.get(4)?,
+                        labels: split(&labels),
+                        attachments: split(&attachments),
                     },
                 );
             }
@@ -76,16 +73,17 @@ impl Cache {
         let mut conn = self.conn.lock().expect("cache lock");
         let tx = conn.transaction()?;
         for s in items {
-            let labels = s
-                .labels
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(&SEP.to_string());
             tx.execute(
-                "INSERT OR REPLACE INTO messages (id, sender, subject, date, labels, has_attachment)
+                "INSERT OR REPLACE INTO messages (id, sender, subject, date, labels, attachments)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![s.id, s.from, s.subject, s.date, labels, s.has_attachment],
+                params![
+                    s.id,
+                    s.from,
+                    s.subject,
+                    s.date,
+                    join(&s.labels),
+                    join(&s.attachments)
+                ],
             )?;
         }
         tx.commit()?;
@@ -103,6 +101,18 @@ impl Cache {
     }
 }
 
+fn join(items: &[String]) -> String {
+    items.join(&SEP.to_string())
+}
+
+fn split(joined: &str) -> Vec<String> {
+    joined
+        .split(SEP)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,7 +124,7 @@ mod tests {
             subject: "hi".to_string(),
             date: "d".to_string(),
             labels: vec!["INBOX".to_string(), "UNREAD".to_string()],
-            has_attachment: true,
+            attachments: vec!["a.pdf".to_string()],
         }
     }
 
@@ -127,7 +137,7 @@ mod tests {
         let got = cache.get(&["1".to_string(), "3".to_string()]).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got["1"].labels, vec!["INBOX", "UNREAD"]);
-        assert!(got["1"].has_attachment);
+        assert_eq!(got["1"].attachments, vec!["a.pdf"]);
 
         cache.remove(&["1".to_string()]).unwrap();
         assert!(cache.get(&["1".to_string()]).unwrap().is_empty());

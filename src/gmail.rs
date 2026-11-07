@@ -18,7 +18,7 @@ use tokio::sync::Notify;
 
 use crate::auth::{BrowserDelegate, NoLoginDelegate};
 use crate::cache::Cache;
-use crate::mail::{Action, Attachment, Label, Page, Selection, Summary};
+use crate::mail::{Action, Attachment, Label, Message as Mail, Page, Selection, Summary};
 
 const SCOPE: &str = "https://mail.google.com/";
 const USER: &str = "me";
@@ -165,25 +165,21 @@ impl Client {
         }
     }
 
-    pub async fn message(&self, id: &str) -> Result<String> {
+    pub async fn message(&self, id: &str) -> Result<Mail> {
         let raw = self.raw(id).await?;
         let parsed = parse(&raw)?;
-        Ok(parsed
+        let body = parsed
             .body_text(0)
             .map(|b| b.into_owned())
-            .unwrap_or_default())
-    }
-
-    pub async fn attachments(&self, id: &str) -> Result<Vec<Attachment>> {
-        let raw = self.raw(id).await?;
-        let parsed = parse(&raw)?;
-        Ok(parsed
+            .unwrap_or_default();
+        let attachments = parsed
             .attachments()
             .map(|part| Attachment {
-                name: part.attachment_name().unwrap_or("attachment").to_string(),
+                name: tidy(part.attachment_name().unwrap_or("attachment")),
                 data: part.decoded().into_owned(),
             })
-            .collect())
+            .collect();
+        Ok(Mail { body, attachments })
     }
 
     async fn raw(&self, id: &str) -> Result<Vec<u8>> {
@@ -278,18 +274,25 @@ impl Client {
             subject: header(&msg, "Subject"),
             date: header(&msg, "Date"),
             labels: msg.label_ids.unwrap_or_default(),
-            has_attachment: msg.payload.as_ref().is_some_and(has_attachment),
+            attachments: msg.payload.as_ref().map_or_else(Vec::new, attachment_names),
             id,
         })
     }
 }
 
-fn has_attachment(part: &MessagePart) -> bool {
-    part.filename.as_deref().is_some_and(|f| !f.is_empty())
-        || part
-            .parts
-            .as_ref()
-            .is_some_and(|ps| ps.iter().any(has_attachment))
+fn attachment_names(part: &MessagePart) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_names(part, &mut names);
+    names
+}
+
+fn collect_names(part: &MessagePart, out: &mut Vec<String>) {
+    if let Some(name) = part.filename.as_deref().filter(|f| !f.is_empty()) {
+        out.push(tidy(name));
+    }
+    for child in part.parts.iter().flatten() {
+        collect_names(child, out);
+    }
 }
 
 pub fn resolve(labels: &[Label], name: &str) -> Result<String> {
@@ -298,6 +301,11 @@ pub fn resolve(labels: &[Label], name: &str) -> Result<String> {
         .find(|l| l.name == name)
         .map(|l| l.id.clone())
         .ok_or_else(|| anyhow!("unknown label: {name}"))
+}
+
+/// Folded MIME header values arrive with embedded line breaks; collapse them.
+fn tidy(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn parse(raw: &[u8]) -> Result<mail_parser::Message<'_>> {

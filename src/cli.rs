@@ -130,7 +130,11 @@ pub async fn run(client: &Client, cmd: MailCmd) -> Result<()> {
     match cmd {
         MailCmd::List(args) => list(client, args).await,
         MailCmd::Read { id } => {
-            println!("{}", client.message(&id).await?);
+            let msg = client.message(&id).await?;
+            println!("{}", msg.body);
+            for a in &msg.attachments {
+                eprintln!("attachment: {} ({})", a.name, human_size(a.data.len()));
+            }
             Ok(())
         }
         MailCmd::Attachments { out, sel } => attachments(client, &out, sel.into()).await,
@@ -184,7 +188,7 @@ async fn attachments(client: &Client, out: &Path, sel: Sel) -> Result<()> {
     std::fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
     let mut saved = 0;
     for id in ids {
-        for a in client.attachments(&id).await? {
+        for a in client.message(&id).await?.attachments {
             let path = out.join(format!("{id}-{}", safe_name(&a.name)));
             if path.exists() {
                 eprintln!("exists, skipped: {}", path.display());
@@ -211,8 +215,23 @@ async fn ids_of(client: &Client, labels: &[Label], sel: Sel) -> Result<Vec<Strin
     })
 }
 
+pub fn human_size(bytes: usize) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut size = bytes as f64;
+    let mut unit = 0;
+    while size >= 1024.0 && unit < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{size:.1} {}", UNITS[unit])
+    }
+}
+
 /// Keeps the name a single path component; an empty name becomes "attachment".
-fn safe_name(name: &str) -> String {
+pub fn safe_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {

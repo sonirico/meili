@@ -9,7 +9,7 @@ pub struct Summary {
     pub subject: String,
     pub date: String,
     pub labels: Vec<String>,
-    pub has_attachment: bool,
+    pub attachments: Vec<String>, // file names, from the MIME parts
 }
 
 pub struct Page {
@@ -33,4 +33,9 @@ pub enum Action {
 pub struct Attachment {
     pub name: String,
     pub data: Vec<u8>,
+}
+
+pub struct Message {
+    pub body: String,
+    pub attachments: Vec<Attachment>,
 }
