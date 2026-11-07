@@ -1,0 +1,17 @@
+[package]
+name = "meili"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+dirs = "7.0.0"
+futures = "0.3.34"
+google-gmail1 = "7.0.0"
+mail-parser = "1.0.1"
+open = "5.4.5"
+ratatui = "0.30.2"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "sync"] }
