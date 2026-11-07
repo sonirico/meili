@@ -50,6 +50,18 @@ pub enum MailCmd {
         #[command(flatten)]
         sel: SelArgs,
     },
+    /// Send a plain-text mail from the logged-in account; prints the new message id
+    Send {
+        #[arg(long, required = true)]
+        to: Vec<String>,
+        #[arg(long)]
+        subject: String,
+        /// File with the body text, or '-' for stdin
+        #[arg(long)]
+        body: PathBuf,
+        #[arg(long)]
+        attach: Vec<PathBuf>,
+    },
     /// Save every attachment of the selection as OUT/<id>-<name>; prints id<TAB>path
     Attachments {
         #[arg(long)]
@@ -120,7 +132,10 @@ fn plan(cmd: MailCmd, labels: &[Label]) -> Result<Plan> {
             sel: sel.into(),
             verb: if remove { "unlabelled" } else { "labelled" },
         },
-        MailCmd::List(_) | MailCmd::Read { .. } | MailCmd::Attachments { .. } => {
+        MailCmd::List(_)
+        | MailCmd::Read { .. }
+        | MailCmd::Attachments { .. }
+        | MailCmd::Send { .. } => {
             unreachable!("not a mutation")
         }
     })
@@ -138,6 +153,12 @@ pub async fn run(client: &Client, cmd: MailCmd) -> Result<()> {
             Ok(())
         }
         MailCmd::Attachments { out, sel } => attachments(client, &out, sel.into()).await,
+        MailCmd::Send {
+            to,
+            subject,
+            body,
+            attach,
+        } => send(client, to, &subject, &body, &attach).await,
         cmd => mutate(client, cmd).await,
     }
 }
@@ -201,6 +222,59 @@ async fn attachments(client: &Client, out: &Path, sel: Sel) -> Result<()> {
     }
     eprintln!("{saved} attachments saved");
     Ok(())
+}
+
+async fn send(
+    client: &Client,
+    to: Vec<String>,
+    subject: &str,
+    body: &Path,
+    attach: &[PathBuf],
+) -> Result<()> {
+    let text = if body == Path::new("-") {
+        std::io::read_to_string(std::io::stdin()).context("read body from stdin")?
+    } else {
+        std::fs::read_to_string(body).with_context(|| format!("read {}", body.display()))?
+    };
+    let from = client.email().await?;
+    let mut msg = mail_builder::MessageBuilder::new()
+        .from(from)
+        .to(to)
+        .subject(subject)
+        .text_body(text);
+    for path in attach {
+        let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("attachment needs a file name")?
+            .to_string();
+        msg = msg.attachment(content_type(&name), name, data);
+    }
+    let raw = msg.write_to_vec().context("build message")?;
+    let id = client.send(raw).await?;
+    println!("{id}");
+    Ok(())
+}
+
+fn content_type(name: &str) -> &'static str {
+    match name
+        .rsplit_once('.')
+        .map_or("", |(_, e)| e)
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "pdf" => "application/pdf",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "txt" | "md" => "text/plain",
+        "csv" => "text/csv",
+        "zip" => "application/zip",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        _ => "application/octet-stream",
+    }
 }
 
 async fn ids_of(client: &Client, labels: &[Label], sel: Sel) -> Result<Vec<String>> {

@@ -194,6 +194,18 @@ impl Client {
         msg.raw.context("message has no raw body")
     }
 
+    /// Sends an RFC 2822 message as the logged-in account.
+    pub async fn send(&self, raw: Vec<u8>) -> Result<String> {
+        let (_, sent) = self
+            .hub
+            .users()
+            .messages_send(Message::default(), USER)
+            .add_scope(SCOPE)
+            .upload(std::io::Cursor::new(raw), "message/rfc822".parse()?)
+            .await?;
+        sent.id.context("sent message has no id")
+    }
+
     pub async fn apply(&self, action: &Action, ids: &[String]) -> Result<()> {
         for chunk in ids.chunks(CHUNK) {
             let ids = Some(chunk.to_vec());

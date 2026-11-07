@@ -114,6 +114,26 @@ mod tests {
     }
 
     #[test]
+    fn send_needs_to_subject_and_body() {
+        assert!(parse(&["mail", "send", "--to=a@b", "--subject=s", "--body=-"]).is_ok());
+        assert!(
+            parse(&[
+                "mail",
+                "send",
+                "--to=a@b",
+                "--to=c@d",
+                "--subject=s",
+                "--body=x",
+                "--attach=f.pdf"
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["mail", "send", "--subject=s", "--body=-"]).is_err());
+        assert!(parse(&["mail", "send", "--to=a@b", "--body=-"]).is_err());
+        assert!(parse(&["mail", "send", "--to=a@b", "--subject=s"]).is_err());
+    }
+
+    #[test]
     fn blank_query_fails() {
         assert!(parse(&["mail", "delete", "--query="]).is_err());
         assert!(parse(&["mail", "delete", "--query=  "]).is_err());
