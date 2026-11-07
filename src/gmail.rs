@@ -2,7 +2,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures::stream::{self, StreamExt, TryStreamExt};
-use google_gmail1::api::{BatchDeleteMessagesRequest, BatchModifyMessagesRequest, Message};
+use google_gmail1::api::{
+    BatchDeleteMessagesRequest, BatchModifyMessagesRequest, Message, MessagePart,
+};
 use google_gmail1::hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use google_gmail1::hyper_util::client::legacy::{Client as HyperClient, connect::HttpConnector};
 use google_gmail1::hyper_util::rt::TokioExecutor;
@@ -263,10 +265,11 @@ impl Client {
             .hub
             .users()
             .messages_get(USER, &id)
-            .format("metadata")
-            .add_metadata_headers("From")
-            .add_metadata_headers("Subject")
-            .add_metadata_headers("Date")
+            .format("full")
+            .param(
+                "fields",
+                "labelIds,payload(headers(name,value),filename,parts(filename,parts(filename,parts(filename))))",
+            )
             .add_scope(SCOPE)
             .doit()
             .await?;
@@ -275,9 +278,18 @@ impl Client {
             subject: header(&msg, "Subject"),
             date: header(&msg, "Date"),
             labels: msg.label_ids.unwrap_or_default(),
+            has_attachment: msg.payload.as_ref().is_some_and(has_attachment),
             id,
         })
     }
+}
+
+fn has_attachment(part: &MessagePart) -> bool {
+    part.filename.as_deref().is_some_and(|f| !f.is_empty())
+        || part
+            .parts
+            .as_ref()
+            .is_some_and(|ps| ps.iter().any(has_attachment))
 }
 
 pub fn resolve(labels: &[Label], name: &str) -> Result<String> {

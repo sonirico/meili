@@ -9,6 +9,7 @@ pub struct Summary {
     pub subject: String,
     pub date: String,
     pub labels: Vec<String>,
+    pub has_attachment: bool,
 }
 
 pub struct Page {

@@ -8,6 +8,8 @@ use rusqlite::{Connection, params};
 use crate::mail::Summary;
 
 const SEP: char = '\x1f';
+/// Bump when the table shape changes; the cache is rebuilt from Gmail.
+const SCHEMA_VERSION: i64 = 2;
 
 /// Local copy of message metadata so a listing only asks Gmail for ids it has not seen.
 pub struct Cache {
@@ -20,15 +22,21 @@ impl Cache {
             std::fs::create_dir_all(dir).context("create cache dir")?;
         }
         let conn = Connection::open(path).with_context(|| format!("open {}", path.display()))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS messages (
-                id TEXT PRIMARY KEY,
-                sender TEXT NOT NULL,
-                subject TEXT NOT NULL,
-                date TEXT NOT NULL,
-                labels TEXT NOT NULL
-            )",
-        )?;
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < SCHEMA_VERSION {
+            conn.execute_batch(&format!(
+                "DROP TABLE IF EXISTS messages;
+                 CREATE TABLE messages (
+                    id TEXT PRIMARY KEY,
+                    sender TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    date TEXT NOT NULL,
+                    labels TEXT NOT NULL,
+                    has_attachment INTEGER NOT NULL
+                 );
+                 PRAGMA user_version = {SCHEMA_VERSION};"
+            ))?;
+        }
         Ok(Cache {
             conn: Mutex::new(conn),
         })
@@ -36,8 +44,9 @@ impl Cache {
 
     pub fn get(&self, ids: &[String]) -> Result<HashMap<String, Summary>> {
         let conn = self.conn.lock().expect("cache lock");
-        let mut stmt =
-            conn.prepare("SELECT sender, subject, date, labels FROM messages WHERE id = ?1")?;
+        let mut stmt = conn.prepare(
+            "SELECT sender, subject, date, labels, has_attachment FROM messages WHERE id = ?1",
+        )?;
         let mut found = HashMap::new();
         for id in ids {
             let mut rows = stmt.query(params![id])?;
@@ -55,6 +64,7 @@ impl Cache {
                             .filter(|l| !l.is_empty())
                             .map(str::to_string)
                             .collect(),
+                        has_attachment: row.get(4)?,
                     },
                 );
             }
@@ -73,8 +83,9 @@ impl Cache {
                 .collect::<Vec<_>>()
                 .join(&SEP.to_string());
             tx.execute(
-                "INSERT OR REPLACE INTO messages (id, sender, subject, date, labels) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![s.id, s.from, s.subject, s.date, labels],
+                "INSERT OR REPLACE INTO messages (id, sender, subject, date, labels, has_attachment)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![s.id, s.from, s.subject, s.date, labels, s.has_attachment],
             )?;
         }
         tx.commit()?;
@@ -103,6 +114,7 @@ mod tests {
             subject: "hi".to_string(),
             date: "d".to_string(),
             labels: vec!["INBOX".to_string(), "UNREAD".to_string()],
+            has_attachment: true,
         }
     }
 
@@ -115,6 +127,7 @@ mod tests {
         let got = cache.get(&["1".to_string(), "3".to_string()]).unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got["1"].labels, vec!["INBOX", "UNREAD"]);
+        assert!(got["1"].has_attachment);
 
         cache.remove(&["1".to_string()]).unwrap();
         assert!(cache.get(&["1".to_string()]).unwrap().is_empty());

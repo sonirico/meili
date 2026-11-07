@@ -183,18 +183,21 @@ fn render_table(f: &mut Frame, app: &App, area: Rect) {
         } else {
             Style::default().fg(Color::Gray)
         };
+        let clip = if s.has_attachment { "@" } else { "" };
         Row::new(vec![
+            Cell::from(clip).style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Cell::from(short_date(&s.date)).style(Style::default().fg(DIM)),
             Cell::from(short_from(&s.from)).style(Style::default().fg(KEY)),
             Cell::from(s.subject.as_str()).style(text),
         ])
     });
-    let header = Row::new(vec!["DATE", "FROM", "SUBJECT"]).style(
+    let header = Row::new(vec![" ", "DATE", "FROM", "SUBJECT"]).style(
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
     );
     let widths = [
+        Constraint::Length(1),
         Constraint::Length(17),
         Constraint::Length(26),
         Constraint::Min(0),
