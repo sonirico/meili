@@ -206,6 +206,11 @@ impl Client {
         sent.id.context("sent message has no id")
     }
 
+    /// Drops cached metadata so the next page() asks Gmail again.
+    pub fn forget(&self, ids: &[String]) -> Result<()> {
+        self.cache.remove(ids)
+    }
+
     pub async fn apply(&self, action: &Action, ids: &[String]) -> Result<()> {
         for chunk in ids.chunks(CHUNK) {
             let ids = Some(chunk.to_vec());

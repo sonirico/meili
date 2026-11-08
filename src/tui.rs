@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -16,6 +17,7 @@ use crate::gmail::Client;
 use crate::mail::{Action, Attachment, Label, Message, Page, Selection};
 
 const HALF_PAGE: usize = 15;
+const AUTO_REFRESH: Duration = Duration::from_secs(30);
 
 const ACCENT: Color = Color::Rgb(255, 160, 0);
 const KEY: Color = Color::Rgb(90, 200, 250);
@@ -99,8 +101,18 @@ pub fn run(client: &Client, rt: &Runtime) -> Result<()> {
 }
 
 fn run_loop(ctx: &mut Ctx, app: &mut App) -> Result<()> {
+    let mut last_refresh = Instant::now();
     loop {
         ctx.terminal.draw(|f| render(f, app))?;
+        let wait = AUTO_REFRESH.saturating_sub(last_refresh.elapsed());
+        if !event::poll(wait)? {
+            if matches!(app.view, View::List) {
+                let result = reload(ctx, app, false);
+                report(app, result);
+            }
+            last_refresh = Instant::now();
+            continue;
+        }
         let Event::Key(key) = event::read()? else {
             continue;
         };
@@ -110,11 +122,15 @@ fn run_loop(ctx: &mut Ctx, app: &mut App) -> Result<()> {
         match handle_key(ctx, app, key) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
-            Err(e) => {
-                app.status = format!("{e:#}");
-                app.error = true;
-            }
+            Err(e) => report(app, Err(e)),
         }
+    }
+}
+
+fn report(app: &mut App, result: Result<()>) {
+    if let Err(e) = result {
+        app.status = format!("{e:#}");
+        app.error = true;
     }
 }
 
@@ -334,6 +350,7 @@ fn render_hints(f: &mut Frame, app: &App, area: Rect) {
             ("d", "trash"),
             ("D", "delete"),
             ("l", "labels"),
+            ("r/R", "refresh/force"),
             ("/", "search"),
             (":", "go to label"),
             ("q", "quit"),
@@ -622,6 +639,14 @@ fn handle_list_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> 
             app.label = (app.label + app.labels.len() - 1) % app.labels.len();
             load_label(ctx, app)?;
         }
+        KeyCode::Char('r') => {
+            reload(ctx, app, false)?;
+            app.status = "refreshed".to_string();
+        }
+        KeyCode::Char('R') => {
+            reload(ctx, app, true)?;
+            app.status = "refreshed (cache dropped)".to_string();
+        }
         KeyCode::Char('/') => app.view = View::Search(String::new()),
         KeyCode::Char(':') => {
             app.view = View::Jump {
@@ -676,6 +701,29 @@ fn load(ctx: &mut Ctx, app: &mut App, sel: Selection) -> Result<()> {
     app.page = page;
     app.cursor = 0;
     app.view = View::List;
+    Ok(())
+}
+
+/// Re-reads the first page of the current selection and keeps the cursor on the same message.
+/// `force` also drops the cached metadata of the loaded rows and re-reads the labels.
+fn reload(ctx: &mut Ctx, app: &mut App, force: bool) -> Result<()> {
+    let client = ctx.client;
+    if force {
+        let ids: Vec<String> = app.page.items.iter().map(|s| s.id.clone()).collect();
+        client.forget(&ids)?;
+        let labels = ctx.call(app, client.labels())?;
+        let current = app.labels[app.label].id.clone();
+        app.label = labels.iter().position(|l| l.id == current).unwrap_or(0);
+        app.labels = labels;
+    }
+    let current = app.page.items.get(app.cursor).map(|s| s.id.clone());
+    let sel = app.sel.clone();
+    let page = ctx.call(app, client.page(&sel, None))?;
+    app.page = page;
+    app.cursor = current
+        .and_then(|id| app.page.items.iter().position(|s| s.id == id))
+        .unwrap_or(0)
+        .min(app.page.items.len().saturating_sub(1));
     Ok(())
 }
 
