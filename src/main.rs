@@ -15,7 +15,11 @@ use crate::cli::MailCmd;
 use crate::gmail::{AuthMode, Client};
 
 #[derive(Parser)]
-#[command(name = "meili", about = "Gmail from the terminal")]
+#[command(
+    name = "meili",
+    about = "Gmail from the terminal: a TUI, and commands for bulk work",
+    after_help = "Run without a subcommand to open the TUI."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -23,7 +27,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Open the browser once and store the token
     Login,
+    /// Non-interactive commands over the mailbox
     Mail {
         #[command(subcommand)]
         cmd: MailCmd,
@@ -131,6 +137,14 @@ mod tests {
         assert!(parse(&["mail", "send", "--subject=s", "--body=-"]).is_err());
         assert!(parse(&["mail", "send", "--to=a@b", "--body=-"]).is_err());
         assert!(parse(&["mail", "send", "--to=a@b", "--subject=s"]).is_err());
+    }
+
+    #[test]
+    fn label_name_and_label_selection_coexist() {
+        assert!(parse(&["mail", "label", "work", "--label=medium"]).is_ok());
+        assert!(parse(&["mail", "label", "work", "--remove", "--query=from:x"]).is_ok());
+        assert!(parse(&["mail", "label", "work", "ID1"]).is_ok());
+        assert!(parse(&["mail", "label", "work"]).is_err());
     }
 
     #[test]

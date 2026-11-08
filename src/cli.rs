@@ -9,17 +9,22 @@ use crate::mail::{Action, Label, Selection};
 #[derive(Args)]
 #[group(required = true, multiple = false)]
 pub struct SelArgs {
+    /// Every message under this label (exact name)
     #[arg(long)]
     label: Option<String>,
+    /// Every message matching this Gmail search query
     #[arg(long, value_parser = non_blank)]
     query: Option<String>,
+    /// Explicit message ids, as printed by `mail list`
     ids: Vec<String>,
 }
 
 #[derive(Args)]
 pub struct ListArgs {
+    /// Messages under this label (exact name) [default: INBOX]
     #[arg(long, conflicts_with = "query")]
     label: Option<String>,
+    /// Messages matching this Gmail search query
     #[arg(long, value_parser = non_blank)]
     query: Option<String>,
     /// Stop after this many messages
@@ -32,19 +37,26 @@ pub struct ListArgs {
 
 #[derive(Subcommand)]
 pub enum MailCmd {
+    /// Print id, date, from and subject as TSV, one message per line
     List(ListArgs),
-    Read {
-        id: String,
-    },
+    /// Print the body text of one message; attachments are listed on stderr
+    Read { id: String },
+    /// Remove the selection from the inbox
     Archive(SelArgs),
+    /// Move the selection to Trash
     Delete {
+        /// Delete for good instead of moving to Trash
         #[arg(long)]
         permanent: bool,
         #[command(flatten)]
         sel: SelArgs,
     },
+    /// Add a label to the selection
     Label {
+        /// Label to add (exact name)
+        #[arg(id = "name", value_name = "LABEL")]
         label: String,
+        /// Remove the label instead of adding it
         #[arg(long)]
         remove: bool,
         #[command(flatten)]
@@ -52,6 +64,7 @@ pub enum MailCmd {
     },
     /// Send a plain-text mail from the logged-in account; prints the new message id
     Send {
+        /// Recipient; repeat for several
         #[arg(long, required = true)]
         to: Vec<String>,
         #[arg(long)]
@@ -59,11 +72,13 @@ pub enum MailCmd {
         /// File with the body text, or '-' for stdin
         #[arg(long)]
         body: PathBuf,
+        /// File to attach; repeat for several
         #[arg(long)]
         attach: Vec<PathBuf>,
     },
     /// Save every attachment of the selection as OUT/<id>-<name>; prints id<TAB>path
     Attachments {
+        /// Directory to write into (created if missing)
         #[arg(long)]
         out: PathBuf,
         #[command(flatten)]
