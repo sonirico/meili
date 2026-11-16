@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
 use crate::gmail::{Client, resolve};
@@ -64,11 +64,15 @@ pub enum MailCmd {
     },
     /// Send a plain-text mail from the logged-in account; prints the new message id
     Send {
-        /// Recipient; repeat for several
-        #[arg(long, required = true)]
+        /// Recipient; repeat for several. Defaults to the sender of --reply-to
+        #[arg(long, required_unless_present = "reply_to")]
         to: Vec<String>,
-        #[arg(long)]
-        subject: String,
+        /// Defaults to "Re: " plus the subject of --reply-to
+        #[arg(long, required_unless_present = "reply_to")]
+        subject: Option<String>,
+        /// Message to answer; the mail joins its thread
+        #[arg(long, value_name = "ID")]
+        reply_to: Option<String>,
         /// File with the body text, or '-' for stdin
         #[arg(long)]
         body: PathBuf,
@@ -171,9 +175,10 @@ pub async fn run(client: &Client, cmd: MailCmd) -> Result<()> {
         MailCmd::Send {
             to,
             subject,
+            reply_to,
             body,
             attach,
-        } => send(client, to, &subject, &body, &attach).await,
+        } => send(client, to, subject, reply_to.as_deref(), &body, &attach).await,
         cmd => mutate(client, cmd).await,
     }
 }
@@ -242,7 +247,8 @@ async fn attachments(client: &Client, out: &Path, sel: Sel) -> Result<()> {
 async fn send(
     client: &Client,
     to: Vec<String>,
-    subject: &str,
+    subject: Option<String>,
+    reply_to: Option<&str>,
     body: &Path,
     attach: &[PathBuf],
 ) -> Result<()> {
@@ -252,11 +258,29 @@ async fn send(
         std::fs::read_to_string(body).with_context(|| format!("read {}", body.display()))?
     };
     let from = client.email().await?;
+    let parent = match reply_to {
+        Some(id) => Some(client.parent(id).await?),
+        None => None,
+    };
+    let to = match &parent {
+        Some(p) if to.is_empty() => vec![p.from.clone()],
+        _ => to,
+    };
+    let subject = match (subject, &parent) {
+        (Some(s), _) => s,
+        (None, Some(p)) => reply_subject(&p.subject),
+        (None, None) => bail!("--subject is required without --reply-to"),
+    };
     let mut msg = mail_builder::MessageBuilder::new()
         .from(from)
         .to(to)
         .subject(subject)
         .text_body(text);
+    if let Some(p) = &parent {
+        let mut references = p.references.clone();
+        references.push(p.message_id.clone());
+        msg = msg.in_reply_to(p.message_id.clone()).references(references);
+    }
     for path in attach {
         let data = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let name = path
@@ -267,9 +291,17 @@ async fn send(
         msg = msg.attachment(content_type(&name), name, data);
     }
     let raw = msg.write_to_vec().context("build message")?;
-    let id = client.send(raw).await?;
+    let id = client.send(raw, parent.map(|p| p.thread)).await?;
     println!("{id}");
     Ok(())
+}
+
+fn reply_subject(subject: &str) -> String {
+    if subject.to_ascii_lowercase().starts_with("re:") {
+        subject.to_string()
+    } else {
+        format!("Re: {subject}")
+    }
 }
 
 fn content_type(name: &str) -> &'static str {

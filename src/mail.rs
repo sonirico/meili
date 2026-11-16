@@ -39,3 +39,12 @@ pub struct Message {
     pub body: String,
     pub attachments: Vec<Attachment>,
 }
+
+/// What a reply needs from the message it answers.
+pub struct Parent {
+    pub thread: String,
+    pub message_id: String,
+    pub references: Vec<String>,
+    pub from: String,
+    pub subject: String,
+}

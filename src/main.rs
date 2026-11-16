@@ -140,6 +140,13 @@ mod tests {
     }
 
     #[test]
+    fn send_reply_to_replaces_to_and_subject() {
+        assert!(parse(&["mail", "send", "--reply-to=ID", "--body=-"]).is_ok());
+        assert!(parse(&["mail", "send", "--reply-to=ID", "--to=a@b", "--body=-"]).is_ok());
+        assert!(parse(&["mail", "send", "--reply-to=ID"]).is_err());
+    }
+
+    #[test]
     fn label_name_and_label_selection_coexist() {
         assert!(parse(&["mail", "label", "work", "--label=medium"]).is_ok());
         assert!(parse(&["mail", "label", "work", "--remove", "--query=from:x"]).is_ok());

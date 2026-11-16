@@ -120,6 +120,7 @@ meili mail delete  [--permanent] (--label NAME | --query QUERY | ID...)
 meili mail label   LABEL [--remove] (--label NAME | --query QUERY | ID...)
 meili mail attachments --out DIR (--label NAME | --query QUERY | ID...)
 meili mail send    --to ADDR... --subject S --body FILE|- [--attach FILE...]
+meili mail send    --reply-to ID [--to ADDR...] [--subject S] --body FILE|- [--attach FILE...]
 ```
 
 `list` prints TSV to stdout: `id  date  from  subject`, 50 rows unless
@@ -127,6 +128,9 @@ you pass `--limit` or `--all`. Mutations print `N messages trashed` and
 the like to stderr and exit 0 even when N is 0, so re-running a cleanup
 is a no-op, not a failure. `read` prints the body to stdout and the
 attachment names and sizes to stderr. `send` prints the new message id.
+With `--reply-to` the mail joins the thread of that message, and goes to
+its sender with "Re: " plus its subject unless you pass `--to` or
+`--subject`.
 
 `delete` moves to Trash. `delete --permanent` does what it says.
 

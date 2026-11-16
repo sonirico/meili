@@ -18,7 +18,7 @@ use tokio::sync::Notify;
 
 use crate::auth::{BrowserDelegate, NoLoginDelegate};
 use crate::cache::Cache;
-use crate::mail::{Action, Attachment, Label, Message as Mail, Page, Selection, Summary};
+use crate::mail::{Action, Attachment, Label, Message as Mail, Page, Parent, Selection, Summary};
 
 const SCOPE: &str = "https://mail.google.com/";
 const USER: &str = "me";
@@ -194,12 +194,48 @@ impl Client {
         msg.raw.context("message has no raw body")
     }
 
-    /// Sends an RFC 2822 message as the logged-in account.
-    pub async fn send(&self, raw: Vec<u8>) -> Result<String> {
+    pub async fn parent(&self, id: &str) -> Result<Parent> {
+        let (_, msg) = self
+            .hub
+            .users()
+            .messages_get(USER, id)
+            .format("raw")
+            .add_scope(SCOPE)
+            .doit()
+            .await?;
+        let raw = msg.raw.context("message has no raw body")?;
+        let parsed = parse(&raw)?;
+        let from = parsed
+            .reply_to()
+            .or(parsed.from())
+            .and_then(|list| list.first())
+            .and_then(|mailbox| mailbox.address())
+            .context("message has no sender address")?;
+        Ok(Parent {
+            thread: msg.thread_id.context("message has no thread")?,
+            message_id: parsed
+                .message_id()
+                .context("message has no Message-ID")?
+                .to_string(),
+            references: parsed
+                .references()
+                .map(|list| list.iter().map(str::to_string).collect())
+                .unwrap_or_default(),
+            from: from.to_string(),
+            subject: parsed.subject().unwrap_or_default().to_string(),
+        })
+    }
+
+    /// Sends an RFC 2822 message as the logged-in account, into `thread` when given.
+    pub async fn send(&self, raw: Vec<u8>, thread: Option<String>) -> Result<String> {
+        let message = Message {
+            thread_id: thread,
+            ..Message::default()
+        };
         let (_, sent) = self
             .hub
             .users()
-            .messages_send(Message::default(), USER)
+            .messages_send(message, USER)
             .add_scope(SCOPE)
             .upload(std::io::Cursor::new(raw), "message/rfc822".parse()?)
             .await?;
