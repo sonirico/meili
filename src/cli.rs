@@ -62,7 +62,7 @@ pub enum MailCmd {
         #[command(flatten)]
         sel: SelArgs,
     },
-    /// Send a plain-text mail from the logged-in account; prints the new message id
+    /// Send a mail from the logged-in account (HTML when the body file ends in .html); prints the new message id
     Send {
         /// Recipient; repeat for several. Defaults to the sender of --reply-to
         #[arg(long, required_unless_present = "reply_to")]
@@ -283,8 +283,12 @@ async fn send(
     let mut msg = mail_builder::MessageBuilder::new()
         .from(from)
         .to(to)
-        .subject(subject)
-        .text_body(text);
+        .subject(subject);
+    msg = if body.extension().is_some_and(|e| e == "html") {
+        msg.html_body(text)
+    } else {
+        msg.text_body(text)
+    };
     if let Some(p) = &parent {
         let mut references = p.references.clone();
         references.push(p.message_id.clone());

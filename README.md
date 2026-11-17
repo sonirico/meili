@@ -132,6 +132,8 @@ attachment names and sizes to stderr. `send` prints the new message id.
 With `--reply-to` the mail joins the thread of that message, and goes to
 its sender with "Re: " plus its subject unless you pass `--to` or
 `--subject`.
+A body file ending in `.html` is sent as HTML, anything else as
+plain text.
 
 `delete` moves to Trash. `delete --permanent` does what it says.
 
