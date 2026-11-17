@@ -109,7 +109,8 @@ Every mutating command takes exactly one selection:
 | `--query QUERY` | every message matching a Gmail search, passed through verbatim |
 | `ID...` | the ids `mail list` printed |
 
-An unknown label is an error, never an empty selection. A blank query is
+An unknown label is an error, never an empty selection. The one exception
+is the label `mail label` adds: it is created when missing. A blank query is
 rejected at parse time, because it would select the whole mailbox.
 
 ```

@@ -51,7 +51,7 @@ pub enum MailCmd {
         #[command(flatten)]
         sel: SelArgs,
     },
-    /// Add a label to the selection
+    /// Add a label to the selection, creating the label if it does not exist
     Label {
         /// Label to add (exact name)
         #[arg(id = "name", value_name = "LABEL")]
@@ -215,7 +215,16 @@ async fn list(client: &Client, args: ListArgs) -> Result<()> {
 }
 
 async fn mutate(client: &Client, cmd: MailCmd) -> Result<()> {
-    let labels = client.labels().await?;
+    let mut labels = client.labels().await?;
+    if let MailCmd::Label {
+        label,
+        remove: false,
+        ..
+    } = &cmd
+        && resolve(&labels, label).is_err()
+    {
+        labels.push(client.create_label(label).await?);
+    }
     let Plan { action, sel, verb } = plan(cmd, &labels)?;
     let ids = ids_of(client, &labels, sel).await?;
     client.apply(&action, &ids).await?;

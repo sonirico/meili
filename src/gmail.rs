@@ -133,6 +133,24 @@ impl Client {
         Ok(labels)
     }
 
+    pub async fn create_label(&self, name: &str) -> Result<Label> {
+        let req = google_gmail1::api::Label {
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+        let (_, res) = self
+            .hub
+            .users()
+            .labels_create(req, USER)
+            .add_scope(SCOPE)
+            .doit()
+            .await?;
+        Ok(Label {
+            id: res.id.context("created label has no id")?,
+            name: name.to_string(),
+        })
+    }
+
     pub async fn page(&self, sel: &Selection, token: Option<&str>) -> Result<Page> {
         let (ids, next) = self.list(sel, token, PAGE_SIZE).await?;
         let mut cached = self.cache.get(&ids)?;
