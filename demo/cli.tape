@@ -3,9 +3,9 @@ Output demo/cli.gif
 Require meili
 
 Set Shell bash
-Set FontSize 16
-Set Width 1280
-Set Height 660
+Set FontSize 14
+Set Width 1440
+Set Height 460
 Set Padding 16
 Set TypingSpeed 60ms
 
