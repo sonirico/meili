@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
-use crate::gmail::{Client, resolve};
+use crate::gmail::resolve;
 use crate::mail::{Action, Label, Selection};
+use crate::provider::Provider;
 
 #[derive(Args)]
 #[group(required = true, multiple = false)]
@@ -160,7 +161,7 @@ fn plan(cmd: MailCmd, labels: &[Label]) -> Result<Plan> {
     })
 }
 
-pub async fn run(client: &Client, cmd: MailCmd) -> Result<()> {
+pub async fn run(client: &impl Provider, cmd: MailCmd) -> Result<()> {
     match cmd {
         MailCmd::List(args) => list(client, args).await,
         MailCmd::Read { id } => {
@@ -183,7 +184,7 @@ pub async fn run(client: &Client, cmd: MailCmd) -> Result<()> {
     }
 }
 
-async fn list(client: &Client, args: ListArgs) -> Result<()> {
+async fn list(client: &impl Provider, args: ListArgs) -> Result<()> {
     let sel = match (args.label, args.query) {
         (Some(name), _) => Selection::Label(resolve(&client.labels().await?, &name)?),
         (_, Some(q)) => Selection::Query(q),
@@ -214,7 +215,7 @@ async fn list(client: &Client, args: ListArgs) -> Result<()> {
     }
 }
 
-async fn mutate(client: &Client, cmd: MailCmd) -> Result<()> {
+async fn mutate(client: &impl Provider, cmd: MailCmd) -> Result<()> {
     let mut labels = client.labels().await?;
     if let MailCmd::Label {
         label,
@@ -232,7 +233,7 @@ async fn mutate(client: &Client, cmd: MailCmd) -> Result<()> {
     Ok(())
 }
 
-async fn attachments(client: &Client, out: &Path, sel: Sel) -> Result<()> {
+async fn attachments(client: &impl Provider, out: &Path, sel: Sel) -> Result<()> {
     let labels = client.labels().await?;
     let ids = ids_of(client, &labels, sel).await?;
     std::fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
@@ -254,7 +255,7 @@ async fn attachments(client: &Client, out: &Path, sel: Sel) -> Result<()> {
 }
 
 async fn send(
-    client: &Client,
+    client: &impl Provider,
     to: Vec<String>,
     subject: Option<String>,
     reply_to: Option<&str>,
@@ -337,7 +338,7 @@ fn content_type(name: &str) -> &'static str {
     }
 }
 
-async fn ids_of(client: &Client, labels: &[Label], sel: Sel) -> Result<Vec<String>> {
+async fn ids_of(client: &impl Provider, labels: &[Label], sel: Sel) -> Result<Vec<String>> {
     Ok(match sel {
         Sel::Label(n) => {
             client

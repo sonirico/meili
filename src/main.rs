@@ -1,18 +1,22 @@
 mod auth;
 mod cache;
 mod cli;
+mod demo;
 mod gmail;
 mod mail;
+mod provider;
 mod tui;
 
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 use crate::cache::Cache;
 use crate::cli::MailCmd;
+use crate::demo::Demo;
 use crate::gmail::{AuthMode, Client};
+use crate::provider::Provider;
 
 #[derive(Parser)]
 #[command(
@@ -21,6 +25,9 @@ use crate::gmail::{AuthMode, Client};
     after_help = "Run without a subcommand to open the TUI."
 )]
 struct Cli {
+    /// Use an invented in-memory mailbox instead of Gmail; no account needed
+    #[arg(long, global = true)]
+    demo: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -56,6 +63,14 @@ fn main() -> ExitCode {
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let rt = tokio::runtime::Runtime::new()?;
+    if cli.demo {
+        let client = Demo::new();
+        return match cli.command {
+            Some(Command::Login) => bail!("--demo has no account to log in to"),
+            Some(Command::Mail { cmd }) => rt.block_on(cli::run(&client, cmd)),
+            None => tui::run(&client, &rt),
+        };
+    }
     let cfg = dirs::config_dir().context("no config dir")?.join("meili");
     let cache = Cache::open(
         &dirs::cache_dir()
@@ -152,6 +167,14 @@ mod tests {
         assert!(parse(&["mail", "label", "work", "--remove", "--query=from:x"]).is_ok());
         assert!(parse(&["mail", "label", "work", "ID1"]).is_ok());
         assert!(parse(&["mail", "label", "work"]).is_err());
+    }
+
+    #[test]
+    fn demo_goes_before_or_after_the_subcommand() {
+        assert!(parse(&["--demo"]).is_ok_and(|c| c.demo));
+        assert!(parse(&["--demo", "mail", "list"]).is_ok_and(|c| c.demo));
+        assert!(parse(&["mail", "list", "--demo"]).is_ok_and(|c| c.demo));
+        assert!(parse(&["mail", "list"]).is_ok_and(|c| !c.demo));
     }
 
     #[test]

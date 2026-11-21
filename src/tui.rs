@@ -13,8 +13,8 @@ use ratatui::{DefaultTerminal, Frame};
 use tokio::runtime::Runtime;
 
 use crate::cli::{human_size, safe_name};
-use crate::gmail::Client;
 use crate::mail::{Action, Attachment, Label, Message, Page, Selection};
+use crate::provider::Provider;
 
 const HALF_PAGE: usize = 15;
 const AUTO_REFRESH: Duration = Duration::from_secs(30);
@@ -51,13 +51,13 @@ enum View {
     Search(String),
 }
 
-struct Ctx<'a> {
-    client: &'a Client,
+struct Ctx<'a, P> {
+    client: &'a P,
     rt: &'a Runtime,
     terminal: DefaultTerminal,
 }
 
-impl Ctx<'_> {
+impl<P> Ctx<'_, P> {
     fn call<T>(&mut self, app: &mut App, fut: impl Future<Output = Result<T>>) -> Result<T> {
         app.status = "working...".to_string();
         app.error = false;
@@ -68,7 +68,7 @@ impl Ctx<'_> {
     }
 }
 
-pub fn run(client: &Client, rt: &Runtime) -> Result<()> {
+pub fn run(client: &impl Provider, rt: &Runtime) -> Result<()> {
     let email = rt.block_on(client.email())?;
     let labels = rt.block_on(client.labels())?;
     let label = labels
@@ -100,7 +100,7 @@ pub fn run(client: &Client, rt: &Runtime) -> Result<()> {
     result
 }
 
-fn run_loop(ctx: &mut Ctx, app: &mut App) -> Result<()> {
+fn run_loop(ctx: &mut Ctx<impl Provider>, app: &mut App) -> Result<()> {
     let mut last_refresh = Instant::now();
     loop {
         ctx.terminal.draw(|f| render(f, app))?;
@@ -456,7 +456,7 @@ fn jump_matches(labels: &[Label], input: &str) -> Vec<usize> {
         .collect()
 }
 
-fn handle_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> {
+fn handle_key(ctx: &mut Ctx<impl Provider>, app: &mut App, key: KeyEvent) -> Result<bool> {
     if key.code != KeyCode::Char('g') {
         app.pending_g = false;
     }
@@ -565,7 +565,7 @@ fn handle_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> {
     }
 }
 
-fn handle_read_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> {
+fn handle_read_key(ctx: &mut Ctx<impl Provider>, app: &mut App, key: KeyEvent) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Down | KeyCode::Char('j') => app.scroll = app.scroll.saturating_add(1),
@@ -595,7 +595,7 @@ fn handle_read_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> 
     Ok(false)
 }
 
-fn handle_list_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> {
+fn handle_list_key(ctx: &mut Ctx<impl Provider>, app: &mut App, key: KeyEvent) -> Result<bool> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     match key.code {
         KeyCode::Char('q') => return Ok(true),
@@ -675,7 +675,7 @@ fn handle_list_key(ctx: &mut Ctx, app: &mut App, key: KeyEvent) -> Result<bool> 
     Ok(false)
 }
 
-fn handle_action_key(ctx: &mut Ctx, app: &mut App, code: KeyCode) -> Result<()> {
+fn handle_action_key(ctx: &mut Ctx<impl Provider>, app: &mut App, code: KeyCode) -> Result<()> {
     if app.page.items.is_empty() {
         return Ok(());
     }
@@ -694,7 +694,7 @@ fn handle_action_key(ctx: &mut Ctx, app: &mut App, code: KeyCode) -> Result<()> 
     }
 }
 
-fn load(ctx: &mut Ctx, app: &mut App, sel: Selection) -> Result<()> {
+fn load(ctx: &mut Ctx<impl Provider>, app: &mut App, sel: Selection) -> Result<()> {
     let client = ctx.client;
     let page = ctx.call(app, client.page(&sel, None))?;
     app.sel = sel;
@@ -706,7 +706,7 @@ fn load(ctx: &mut Ctx, app: &mut App, sel: Selection) -> Result<()> {
 
 /// Re-reads the first page of the current selection and keeps the cursor on the same message.
 /// `force` also drops the cached metadata of the loaded rows and re-reads the labels.
-fn reload(ctx: &mut Ctx, app: &mut App, force: bool) -> Result<()> {
+fn reload(ctx: &mut Ctx<impl Provider>, app: &mut App, force: bool) -> Result<()> {
     let client = ctx.client;
     if force {
         let ids: Vec<String> = app.page.items.iter().map(|s| s.id.clone()).collect();
@@ -727,13 +727,13 @@ fn reload(ctx: &mut Ctx, app: &mut App, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn load_label(ctx: &mut Ctx, app: &mut App) -> Result<()> {
+fn load_label(ctx: &mut Ctx<impl Provider>, app: &mut App) -> Result<()> {
     let sel = Selection::Label(app.labels[app.label].id.clone());
     load(ctx, app, sel)
 }
 
 /// Moves the cursor down `n` rows, loading the next page when it runs past the end.
-fn next_row(ctx: &mut Ctx, app: &mut App, n: usize) -> Result<()> {
+fn next_row(ctx: &mut Ctx<impl Provider>, app: &mut App, n: usize) -> Result<()> {
     let target = app.cursor.saturating_add(n);
     if target >= app.page.items.len()
         && let Some(token) = app.page.next.clone()
@@ -748,7 +748,7 @@ fn next_row(ctx: &mut Ctx, app: &mut App, n: usize) -> Result<()> {
     Ok(())
 }
 
-fn read(ctx: &mut Ctx, app: &mut App) -> Result<()> {
+fn read(ctx: &mut Ctx<impl Provider>, app: &mut App) -> Result<()> {
     let Some(item) = app.page.items.get(app.cursor) else {
         return Ok(());
     };
@@ -772,7 +772,7 @@ fn save_attachment(a: &Attachment) -> Result<std::path::PathBuf> {
     Ok(path)
 }
 
-fn act(ctx: &mut Ctx, app: &mut App, action: Action) -> Result<()> {
+fn act(ctx: &mut Ctx<impl Provider>, app: &mut App, action: Action) -> Result<()> {
     let id = app.page.items[app.cursor].id.clone();
     let client = ctx.client;
     ctx.call(app, client.apply(&action, std::slice::from_ref(&id)))?;

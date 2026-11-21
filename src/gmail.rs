@@ -19,6 +19,7 @@ use tokio::sync::Notify;
 use crate::auth::{BrowserDelegate, NoLoginDelegate};
 use crate::cache::Cache;
 use crate::mail::{Action, Attachment, Label, Message as Mail, Page, Parent, Selection, Summary};
+use crate::provider::Provider;
 
 const SCOPE: &str = "https://mail.google.com/";
 const USER: &str = "me";
@@ -99,107 +100,6 @@ impl Client {
         })
     }
 
-    pub async fn email(&self) -> Result<String> {
-        let (_, profile) = self
-            .hub
-            .users()
-            .get_profile(USER)
-            .add_scope(SCOPE)
-            .doit()
-            .await?;
-        profile.email_address.context("profile has no email")
-    }
-
-    pub async fn labels(&self) -> Result<Vec<Label>> {
-        let (_, res) = self
-            .hub
-            .users()
-            .labels_list(USER)
-            .add_scope(SCOPE)
-            .doit()
-            .await?;
-        let mut labels: Vec<Label> = res
-            .labels
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|l| {
-                Some(Label {
-                    id: l.id?,
-                    name: l.name?,
-                })
-            })
-            .collect();
-        labels.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(labels)
-    }
-
-    pub async fn create_label(&self, name: &str) -> Result<Label> {
-        let req = google_gmail1::api::Label {
-            name: Some(name.to_string()),
-            ..Default::default()
-        };
-        let (_, res) = self
-            .hub
-            .users()
-            .labels_create(req, USER)
-            .add_scope(SCOPE)
-            .doit()
-            .await?;
-        Ok(Label {
-            id: res.id.context("created label has no id")?,
-            name: name.to_string(),
-        })
-    }
-
-    pub async fn page(&self, sel: &Selection, token: Option<&str>) -> Result<Page> {
-        let (ids, next) = self.list(sel, token, PAGE_SIZE).await?;
-        let mut cached = self.cache.get(&ids)?;
-        let missing: Vec<String> = ids
-            .iter()
-            .filter(|id| !cached.contains_key(*id))
-            .cloned()
-            .collect();
-        let fetched: Vec<Summary> = stream::iter(missing)
-            .map(|id| self.summary(id))
-            .buffered(IN_FLIGHT)
-            .try_collect()
-            .await?;
-        self.cache.put(&fetched)?;
-        cached.extend(fetched.into_iter().map(|s| (s.id.clone(), s)));
-        let items = ids.iter().filter_map(|id| cached.remove(id)).collect();
-        Ok(Page { items, next })
-    }
-
-    pub async fn all_ids(&self, sel: &Selection) -> Result<Vec<String>> {
-        let mut all = Vec::new();
-        let mut token = None;
-        loop {
-            let (ids, next) = self.list(sel, token.as_deref(), ALL_PAGE_SIZE).await?;
-            all.extend(ids);
-            match next {
-                Some(_) => token = next,
-                None => return Ok(all),
-            }
-        }
-    }
-
-    pub async fn message(&self, id: &str) -> Result<Mail> {
-        let raw = self.raw(id).await?;
-        let parsed = parse(&raw)?;
-        let body = parsed
-            .body_text(0)
-            .map(|b| b.into_owned())
-            .unwrap_or_default();
-        let attachments = parsed
-            .attachments()
-            .map(|part| Attachment {
-                name: tidy(part.attachment_name().unwrap_or("attachment")),
-                data: part.decoded().into_owned(),
-            })
-            .collect();
-        Ok(Mail { body, attachments })
-    }
-
     async fn raw(&self, id: &str) -> Result<Vec<u8>> {
         let (_, msg) = self
             .hub
@@ -210,92 +110,6 @@ impl Client {
             .doit()
             .await?;
         msg.raw.context("message has no raw body")
-    }
-
-    pub async fn parent(&self, id: &str) -> Result<Parent> {
-        let (_, msg) = self
-            .hub
-            .users()
-            .messages_get(USER, id)
-            .format("raw")
-            .add_scope(SCOPE)
-            .doit()
-            .await?;
-        let raw = msg.raw.context("message has no raw body")?;
-        let parsed = parse(&raw)?;
-        let from = parsed
-            .reply_to()
-            .or(parsed.from())
-            .and_then(|list| list.first())
-            .and_then(|mailbox| mailbox.address())
-            .context("message has no sender address")?;
-        Ok(Parent {
-            thread: msg.thread_id.context("message has no thread")?,
-            message_id: parsed
-                .message_id()
-                .context("message has no Message-ID")?
-                .to_string(),
-            references: parsed
-                .references()
-                .map(|list| list.iter().map(str::to_string).collect())
-                .unwrap_or_default(),
-            from: from.to_string(),
-            subject: parsed.subject().unwrap_or_default().to_string(),
-        })
-    }
-
-    /// Sends an RFC 2822 message as the logged-in account, into `thread` when given.
-    pub async fn send(&self, raw: Vec<u8>, thread: Option<String>) -> Result<String> {
-        let message = Message {
-            thread_id: thread,
-            ..Message::default()
-        };
-        let (_, sent) = self
-            .hub
-            .users()
-            .messages_send(message, USER)
-            .add_scope(SCOPE)
-            .upload(std::io::Cursor::new(raw), "message/rfc822".parse()?)
-            .await?;
-        sent.id.context("sent message has no id")
-    }
-
-    /// Drops cached metadata so the next page() asks Gmail again.
-    pub fn forget(&self, ids: &[String]) -> Result<()> {
-        self.cache.remove(ids)
-    }
-
-    pub async fn apply(&self, action: &Action, ids: &[String]) -> Result<()> {
-        for chunk in ids.chunks(CHUNK) {
-            let ids = Some(chunk.to_vec());
-            let users = self.hub.users();
-            let (add, remove) = match action {
-                Action::Delete => {
-                    users
-                        .messages_batch_delete(BatchDeleteMessagesRequest { ids }, USER)
-                        .add_scope(SCOPE)
-                        .doit()
-                        .await?;
-                    continue;
-                }
-                Action::Archive => (vec![], vec!["INBOX".to_string()]),
-                Action::Trash => (vec!["TRASH".to_string()], vec!["INBOX".to_string()]),
-                Action::Label { id, remove: false } => (vec![id.clone()], vec![]),
-                Action::Label { id, remove: true } => (vec![], vec![id.clone()]),
-            };
-            let req = BatchModifyMessagesRequest {
-                ids,
-                add_label_ids: Some(add),
-                remove_label_ids: Some(remove),
-            };
-            users
-                .messages_batch_modify(req, USER)
-                .add_scope(SCOPE)
-                .doit()
-                .await?;
-        }
-        self.cache.remove(ids)?;
-        Ok(())
     }
 
     async fn list(
@@ -348,6 +162,193 @@ impl Client {
             attachments: msg.payload.as_ref().map_or_else(Vec::new, attachment_names),
             id,
         })
+    }
+}
+
+impl Provider for Client {
+    async fn email(&self) -> Result<String> {
+        let (_, profile) = self
+            .hub
+            .users()
+            .get_profile(USER)
+            .add_scope(SCOPE)
+            .doit()
+            .await?;
+        profile.email_address.context("profile has no email")
+    }
+
+    async fn labels(&self) -> Result<Vec<Label>> {
+        let (_, res) = self
+            .hub
+            .users()
+            .labels_list(USER)
+            .add_scope(SCOPE)
+            .doit()
+            .await?;
+        let mut labels: Vec<Label> = res
+            .labels
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|l| {
+                Some(Label {
+                    id: l.id?,
+                    name: l.name?,
+                })
+            })
+            .collect();
+        labels.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(labels)
+    }
+
+    async fn create_label(&self, name: &str) -> Result<Label> {
+        let req = google_gmail1::api::Label {
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+        let (_, res) = self
+            .hub
+            .users()
+            .labels_create(req, USER)
+            .add_scope(SCOPE)
+            .doit()
+            .await?;
+        Ok(Label {
+            id: res.id.context("created label has no id")?,
+            name: name.to_string(),
+        })
+    }
+
+    async fn page(&self, sel: &Selection, token: Option<&str>) -> Result<Page> {
+        let (ids, next) = self.list(sel, token, PAGE_SIZE).await?;
+        let mut cached = self.cache.get(&ids)?;
+        let missing: Vec<String> = ids
+            .iter()
+            .filter(|id| !cached.contains_key(*id))
+            .cloned()
+            .collect();
+        let fetched: Vec<Summary> = stream::iter(missing)
+            .map(|id| self.summary(id))
+            .buffered(IN_FLIGHT)
+            .try_collect()
+            .await?;
+        self.cache.put(&fetched)?;
+        cached.extend(fetched.into_iter().map(|s| (s.id.clone(), s)));
+        let items = ids.iter().filter_map(|id| cached.remove(id)).collect();
+        Ok(Page { items, next })
+    }
+
+    async fn all_ids(&self, sel: &Selection) -> Result<Vec<String>> {
+        let mut all = Vec::new();
+        let mut token = None;
+        loop {
+            let (ids, next) = self.list(sel, token.as_deref(), ALL_PAGE_SIZE).await?;
+            all.extend(ids);
+            match next {
+                Some(_) => token = next,
+                None => return Ok(all),
+            }
+        }
+    }
+
+    async fn message(&self, id: &str) -> Result<Mail> {
+        let raw = self.raw(id).await?;
+        let parsed = parse(&raw)?;
+        let body = parsed
+            .body_text(0)
+            .map(|b| b.into_owned())
+            .unwrap_or_default();
+        let attachments = parsed
+            .attachments()
+            .map(|part| Attachment {
+                name: tidy(part.attachment_name().unwrap_or("attachment")),
+                data: part.decoded().into_owned(),
+            })
+            .collect();
+        Ok(Mail { body, attachments })
+    }
+
+    async fn parent(&self, id: &str) -> Result<Parent> {
+        let (_, msg) = self
+            .hub
+            .users()
+            .messages_get(USER, id)
+            .format("raw")
+            .add_scope(SCOPE)
+            .doit()
+            .await?;
+        let raw = msg.raw.context("message has no raw body")?;
+        let parsed = parse(&raw)?;
+        let from = parsed
+            .reply_to()
+            .or(parsed.from())
+            .and_then(|list| list.first())
+            .and_then(|mailbox| mailbox.address())
+            .context("message has no sender address")?;
+        Ok(Parent {
+            thread: msg.thread_id.context("message has no thread")?,
+            message_id: parsed
+                .message_id()
+                .context("message has no Message-ID")?
+                .to_string(),
+            references: parsed
+                .references()
+                .map(|list| list.iter().map(str::to_string).collect())
+                .unwrap_or_default(),
+            from: from.to_string(),
+            subject: parsed.subject().unwrap_or_default().to_string(),
+        })
+    }
+
+    async fn send(&self, raw: Vec<u8>, thread: Option<String>) -> Result<String> {
+        let message = Message {
+            thread_id: thread,
+            ..Message::default()
+        };
+        let (_, sent) = self
+            .hub
+            .users()
+            .messages_send(message, USER)
+            .add_scope(SCOPE)
+            .upload(std::io::Cursor::new(raw), "message/rfc822".parse()?)
+            .await?;
+        sent.id.context("sent message has no id")
+    }
+
+    fn forget(&self, ids: &[String]) -> Result<()> {
+        self.cache.remove(ids)
+    }
+
+    async fn apply(&self, action: &Action, ids: &[String]) -> Result<()> {
+        for chunk in ids.chunks(CHUNK) {
+            let ids = Some(chunk.to_vec());
+            let users = self.hub.users();
+            let (add, remove) = match action {
+                Action::Delete => {
+                    users
+                        .messages_batch_delete(BatchDeleteMessagesRequest { ids }, USER)
+                        .add_scope(SCOPE)
+                        .doit()
+                        .await?;
+                    continue;
+                }
+                Action::Archive => (vec![], vec!["INBOX".to_string()]),
+                Action::Trash => (vec!["TRASH".to_string()], vec!["INBOX".to_string()]),
+                Action::Label { id, remove: false } => (vec![id.clone()], vec![]),
+                Action::Label { id, remove: true } => (vec![], vec![id.clone()]),
+            };
+            let req = BatchModifyMessagesRequest {
+                ids,
+                add_label_ids: Some(add),
+                remove_label_ids: Some(remove),
+            };
+            users
+                .messages_batch_modify(req, USER)
+                .add_scope(SCOPE)
+                .doit()
+                .await?;
+        }
+        self.cache.remove(ids)?;
+        Ok(())
     }
 }
 
