@@ -416,11 +416,11 @@ mod tests {
     #[test]
     fn delete_trashes_unless_permanent() {
         assert!(matches!(
-            action_of(&["delete", "--label=medium"]),
+            action_of(&["delete", "--label=newsletters"]),
             Action::Trash
         ));
         assert!(matches!(
-            action_of(&["delete", "--permanent", "--label=medium"]),
+            action_of(&["delete", "--permanent", "--label=newsletters"]),
             Action::Delete
         ));
     }

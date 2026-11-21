@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn label_name_and_label_selection_coexist() {
-        assert!(parse(&["mail", "label", "work", "--label=medium"]).is_ok());
+        assert!(parse(&["mail", "label", "work", "--label=newsletters"]).is_ok());
         assert!(parse(&["mail", "label", "work", "--remove", "--query=from:x"]).is_ok());
         assert!(parse(&["mail", "label", "work", "ID1"]).is_ok());
         assert!(parse(&["mail", "label", "work"]).is_err());

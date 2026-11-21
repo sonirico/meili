@@ -1,5 +1,11 @@
 # meili
 
+[![ci](https://github.com/sonirico/meili/actions/workflows/ci.yml/badge.svg)](https://github.com/sonirico/meili/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+Pronounced like 美丽 (měilì) in Mandarin, roughly "may-lee". It means
+"beautiful", and it sounds like "mail".
+
 Gmail from the terminal. A k9s-style TUI with vim keys for day-to-day
 reading, and a non-interactive command mode for the things a TUI is bad
 at: emptying a label, trashing everything that matches a query, pulling
@@ -7,12 +13,27 @@ every attachment a sender ever mailed you, sending a file from a script.
 
 ```
 meili                                   # the TUI
-meili mail delete --label medium        # 838 messages trashed
-meili mail attachments --query 'from:ceo@acme.com filename:pdf' --out ~/reports
+meili mail delete --label newsletters   # 312 messages trashed
+meili mail attachments --query 'from:ceo@acme.example filename:pdf' --out ~/reports
 ```
 
-Gmail is the first provider. Nothing Gmail-specific leaves `src/gmail.rs`,
-so a second provider is a trait extraction, not a rewrite.
+![The TUI: moving through the inbox, reading a message, saving an attachment](demo/tui.gif)
+
+Gmail is the first provider. Both front ends talk to the `Provider` trait
+in `src/provider.rs`, and nothing Gmail-specific leaves `src/gmail.rs`.
+
+## Try it without an account
+
+```
+meili --demo
+meili --demo mail list --query 'from:kestrel has:attachment'
+```
+
+`--demo` swaps Gmail for an invented mailbox that lives in memory. It
+needs no login, touches no network, and forgets every change when the
+process exits. Every command and every key works. Search understands a
+small subset of the Gmail syntax: `from:`, `has:attachment`, `in:trash`
+and plain words. Every recording in this README was made with it.
 
 ## Install
 
@@ -56,18 +77,7 @@ Permanent delete and send need it, and asking once beats asking twice.
 meili
 ```
 
-```
- meili  you@gmail.com
- view   INBOX   50+ messages
-
-      DATE               FROM                        SUBJECT
- 📕   07 Nov 2026 15:06  Northwind Hosting           Your invoice is attached
-      07 Nov 2026 06:16  Priya Nair                  Re: Q4 planning notes
- 🖼️🖼️  06 Nov 2026 07:18  Mara Lindqvist              Photos from the offsite
- 📕📕  05 Nov 2026 19:06  Chen Wei                    工作报告 Weekly report
-
- <j/k> move <g/G> top/end <C-d/u> page <enter> read <o> attachments <a> archive ...
-```
+![Labels, search, jumping to a label, archive, trash and delete](demo/organize.gif)
 
 Unread messages are bold. The first column shows one icon per attachment
 kind for the first two attachments: image, PDF, document, spreadsheet,
@@ -90,6 +100,9 @@ slides, archive, audio, video, calendar, or a paperclip for anything else.
 | `r` `R` | refresh; `R` also drops the cached rows and re-reads the labels |
 | `q` `C-c` | quit |
 
+Inside a message `j` `k` scroll, `g` `G` jump to the top or the end, and
+`o` `a` `d` `D` `l` act on it. `q` or `Esc` goes back to the list.
+
 The list refreshes itself every 30 seconds while you are on it. The
 cursor stays on the same message.
 
@@ -100,6 +113,8 @@ The TUI calls Gmail synchronously and shows `working...` meanwhile. Pages
 of 50 load as you scroll past the last row.
 
 ## Command mode
+
+![Command mode: list, read, save attachments, bulk delete, reply](demo/cli.gif)
 
 Every mutating command takes exactly one selection:
 
@@ -137,29 +152,33 @@ plain text.
 
 `delete` moves to Trash. `delete --permanent` does what it says.
 
+`attachments` writes each file as `DIR/<id>-<name>`, prints `id  path`
+per file, and skips a file that already exists, so re-running it only
+fetches what is new.
+
 Queries starting with `-` need the `=` form: `--query='-has:attachment'`.
 
 ### Recipes
 
 ```sh
 # empty a label, then make sure
-meili mail delete --label medium
-meili mail list --label medium           # prints nothing
+meili mail delete --label newsletters
+meili mail list --label newsletters      # prints nothing
 
 # archive newsletters older than a month
 meili mail archive --query 'category:promotions older_than:30d'
 
 # every PDF a sender ever mailed you
-meili mail attachments --query 'from:ceo@acme.com has:attachment' --out ~/reports
+meili mail attachments --query 'from:ceo@acme.example has:attachment' --out ~/reports
 
 # read a whole label
 meili mail list --label work --all | cut -f1 | xargs -n1 meili mail read
 
 # mail a report from a script
-echo 'Attached.' | meili mail send --to boss@acme.com --subject 'Q3 numbers' --body - --attach q3.xlsx
+echo 'Attached.' | meili mail send --to boss@acme.example --subject 'Q3 numbers' --body - --attach q3.xlsx
 
 # really empty the trash of one sender
-meili mail delete --permanent --query 'in:trash from:medium.com'
+meili mail delete --permanent --query 'in:trash from:brightdeals.example'
 ```
 
 Spam and Trash are excluded from every selection unless the query names
@@ -186,21 +205,40 @@ bar. A bulk action by query therefore never reaches Trash by accident.
 ## Layout
 
 ```
-src/main.rs    clap entry point and wiring
-src/cli.rs     command mode
-src/tui.rs     the TUI
-src/gmail.rs   the only file that knows Gmail types
-src/auth.rs    OAuth delegates: open the browser, or refuse to
-src/cache.rs   SQLite metadata cache
-src/mail.rs    domain types shared by both front ends
+src/main.rs      clap entry point and wiring
+src/cli.rs       command mode
+src/tui.rs       the TUI
+src/provider.rs  the trait both front ends talk to
+src/gmail.rs     the Gmail provider, the only file that knows Gmail types
+src/demo.rs      the in-memory provider behind --demo
+src/auth.rs      OAuth delegates: open the browser, or refuse to
+src/cache.rs     SQLite metadata cache
+src/mail.rs      domain types shared by both front ends
 ```
 
+## Development
+
 ```
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 cargo test
-cargo clippy --all-targets
+```
+
+The recordings are scripted with [vhs](https://github.com/charmbracelet/vhs).
+The tapes live in `demo/` and run against `--demo`, so they never show a
+real mailbox. To record them again, with `meili` on your `PATH`:
+
+```
+vhs demo/tui.tape
+vhs demo/organize.tape
+vhs demo/cli.tape
 ```
 
 ## Not here
 
 Multiple accounts, HTML rendering, CC/BCC, a local search index,
 offline mode. Open an issue if one of them is blocking you.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -2,6 +2,13 @@
 name = "meili"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Gmail from the terminal: k9s-style TUI and bulk command mode"
+license = "MIT"
+repository = "https://github.com/sonirico/meili"
+readme = "README.md"
+keywords = ["gmail", "email", "tui", "cli"]
+categories = ["command-line-utilities", "email"]
 
 [dependencies]
 anyhow = "1.0.104"

@@ -409,7 +409,7 @@ mod tests {
         vec![
             Label {
                 id: "Label_1".into(),
-                name: "medium".into(),
+                name: "newsletters".into(),
             },
             Label {
                 id: "Label_2".into(),
@@ -425,6 +425,6 @@ mod tests {
 
     #[test]
     fn resolve_rejects_unknown_name() {
-        assert!(resolve(&labels(), "mediu").is_err());
+        assert!(resolve(&labels(), "newsletter").is_err());
     }
 }
